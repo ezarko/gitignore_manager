@@ -1,5 +1,3 @@
-#define VERSION "0.1"
-
 #include <filesystem>
 #include <fstream>
 //#include <streambuf>

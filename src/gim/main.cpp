@@ -4,29 +4,29 @@
 #include <string>
 #include "Manager.h"
 
-static const char * optstring = "e:d:ish";
+#define VERSION "0.2"
+
+static const char * optstring = "vgi:";
 static struct option longopts[] = {
-        { "enable",      required_argument, NULL, 'e' },
-        { "disable",     required_argument, NULL, 'd' },
-        { "interactive", no_argument,       NULL, 'i' },
-        { "status",      no_argument,       NULL, 's' },
-        { "help",        no_argument,       NULL, 'h' },
-        { NULL,          0,                 NULL, 0 }
+    { "version",     no_argument,       NULL, 'v' },
+    { "global",      no_argument,       NULL, 'g' },
+    { "ignore-file", required_argument, NULL, 'i' },
+    { NULL,          0,                 NULL, 0 }
 };
 
-void usage(int code = 0)
+void usage()
 {
-    std::cout << "gim [options] <gitignore file> <gitignore parts directory>\n"
-              << "  Options:\n"
-              << "        --enable\n"
-              << "        Enable one or more hostfile fragments.  This option may be specified multiple times.\n"
-              << "        --disable\n"
-              << "        Disable one or more hostfile fragments.  This option may be specified multiple times.\n"
-              << "        --status\n"
-              << "        Display a list of fragments and their status.  A '+' indicates the fragment is enabled.  A '*' indicates an enabled fragment has been changed in /etc/hosts.\n"
-              << "        --interactive\n"
-              << "        Presents an interactive list of hostfile fragment to enable or disable.\n";
-    exit(code);
+    std::cout << "usage: gim [--version] [--global] [--ignore-file=<name>] <command> [<args>]\n"
+              << "\n"
+              << "These are Gim commands used in various situations:\n"
+              << "\n"
+              << "   enable    Enable one or more gitignore fragments.\n"
+              << "   disable   Disable one or more gitignore fragments.\n"
+              << "   status    Display a list of fragments and their status.\n"
+              << "             A '+' indicates the fragment is enabled.\n"
+              << "             A '*' indicates an enabled fragment has been changed.\n"
+              << "   help      This message.\n";
+    exit(0);
 }
 
 std::string fragment_status_line(Manager* manager, std::string name)
@@ -39,94 +39,87 @@ std::string fragment_status_line(Manager* manager, std::string name)
     return line;
 }
 
+std::string exec(const char* cmd) {
+    char buffer[128];
+    std::string result = "";
+    FILE* pipe = popen(cmd, "r");
+    if (!pipe) throw std::runtime_error("popen() failed!");
+    try {
+        while (fgets(buffer, sizeof buffer, pipe) != NULL) {
+            result += buffer;
+        }
+    } catch (...) {
+        pclose(pipe);
+        throw;
+    }
+    pclose(pipe);
+    return result;
+}
+
 int main(int argc, char** argv)
 {
-    std::set<std::string> enabled;
-    std::set<std::string> disabled;
+    int ch;
+    std::string gitignore_file = ".gitignore";
+    std::string gitignore_dir;
 
-    int ch, interactive, status;
-    interactive = status = 0;
     while ((ch = getopt_long(argc, argv, optstring, longopts, NULL)) != -1) {
         switch (ch) {
-            case 'e':
-                enabled.insert(optarg);
-                break;
-            case 'd':
-                disabled.insert(optarg);
+            case 'v':
+                std::cout << "gim version " << VERSION << /* " (Apple Git-128)" << */ "\n";
+                exit(0);
+            case 'g':
+                gitignore_file = exec("git config --global core.excludesfile");
+                gitignore_file.pop_back();
                 break;
             case 'i':
-                interactive = 1;
-                break;
-            case 's':
-                status = 1;
-                break;
-            case 'h':
-                usage(1);
+                gitignore_file = optarg;
                 break;
             default:
-                usage(2);
+                usage();
         }
     }
 
-    if (enabled.empty() && disabled.empty() && !status && !interactive)
+    if (optind == argc)
     {
-        usage(1);
+        usage();
     }
-
-    Manager* manager = new Manager(argv[argc-2], argv[argc-1]);
-
-    if (interactive) {
-        std::cout << "Interactive not implemented.\n";
-/*
-        int modified = 0;
-
-        while (
-            std::string chosen = choose(
-                "Select a hostfile fragment:",
-                map {
-                        fragment_status_line(*it);
-                    }
-                } manager->fragment_list
-            )
-        )
+    gitignore_dir = exec("git config --global core.excludesdir");
+    gitignore_dir.pop_back();
+    Manager* manager = new Manager(gitignore_file, gitignore_dir);
+    if (strcmp(argv[optind], "enable") == 0)
+    {
+        for (int i = optind+1; i < argc; ++i)
         {
-            chosen =~ s/^..//;
-            manager->toggle_fragment(chosen);
-            modified = 1;
+            std::cout << "Enabling " << argv[i] << "\n";
+            manager->enable_fragment(argv[i]);
         }
-
-        if (modified)
+        std::cout << "Writing file\n";
+        manager->write_gitignore_file();
+    }
+    else if (strcmp(argv[optind], "disable") == 0)
+    {
+        for (int i = optind+1; i < argc; ++i)
         {
-            manager->write_hostfile();
+            std::cout << "Disabling " << argv[i] << "\n";
+            manager->disable_fragment(argv[i]);
         }
-*/
+        std::cout << "Writing file\n";
+        manager->write_gitignore_file();
+    }
+    else if (strcmp(argv[optind], "status") == 0)
+    {
+        std::map<std::string, Fragment*> list = manager->fragment_list();
+        for (std::map<std::string, Fragment*>::iterator it = list.begin(); it != list.end(); ++it)
+        {
+            std::cout << fragment_status_line(manager, it->first) << "\n";
+        }
     }
     else
     {
-        for (std::set<std::string>::iterator it = disabled.begin(); it != disabled.end(); ++it)
+        if (strcmp(argv[optind], "help") != 0)
         {
-            std::cout << "Disabling " << *it << "\n";
-            manager->disable_fragment(*it);
+            std::cerr << "gim: unrecognized command '" << argv[optind] << "'\n";
         }
-        for (std::set<std::string>::iterator it = enabled.begin(); it != enabled.end(); ++it)
-        {
-            std::cout << "Enabling " << *it << "\n";
-            manager->enable_fragment(*it);
-        }
-
-        if (!enabled.empty() || !disabled.empty())
-        {
-            std::cout << "Writing file\n";
-            manager->write_gitignore_file();
-        }
-
-        if (status)
-        {
-            std::map<std::string, Fragment*> list = manager->fragment_list();
-            for (std::map<std::string, Fragment*>::iterator it = list.begin(); it != list.end(); ++it)
-            {
-                std::cout << fragment_status_line(manager, it->first) << "\n";
-            }
-        }
+        usage();
     }
 }
